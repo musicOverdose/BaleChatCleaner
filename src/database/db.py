@@ -9,6 +9,7 @@ import json
 import logging
 from typing import List, Optional, Dict, Any, Union
 from datetime import datetime
+from contextlib import asynccontextmanager
 from src.database.models import ChatRecord, TrackedMessage, CleaningJob
 
 logger = logging.getLogger(__name__)
@@ -70,12 +71,21 @@ class DatabaseManager:
     def __init__(self, db_path: str):
         self.db_path = db_path
 
+    @asynccontextmanager
+    async def _connect(self):
+        """Yields an aiosqlite connection configured with a 30s lock timeout and WAL busy handling."""
+        async with aiosqlite.connect(self.db_path, timeout=30.0) as db:
+            await db.execute("PRAGMA busy_timeout=30000;")
+            yield db
+
     async def init_db(self):
         """Initializes tables, indices, and ensures migrations for existing schemas."""
         db_dir = os.path.dirname(os.path.abspath(self.db_path))
         if db_dir:
             os.makedirs(db_dir, exist_ok=True)
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
+            await db.execute("PRAGMA journal_mode=WAL;")
+            await db.execute("PRAGMA synchronous=NORMAL;")
             await db.executescript(CREATE_TABLES_SQL)
             # Safe column migration for existing databases
             try:
@@ -91,14 +101,14 @@ class DatabaseManager:
             except Exception:
                 pass
             await db.commit()
-        logger.info(f"Database initialized at {self.db_path}")
+        logger.info(f"Database initialized at {self.db_path} with WAL mode")
 
     # ==================== CHAT OPERATIONS ====================
 
     async def upsert_chat(
         self, chat_id: int, title: str, chat_type: str, username: Optional[str] = None
     ) -> None:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             await db.execute(
                 """
                 INSERT INTO chats (chat_id, title, chat_type, username, is_active)
@@ -119,7 +129,7 @@ class DatabaseManager:
             query += " WHERE is_active = 1"
         query += " ORDER BY added_at DESC"
 
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             db.row_factory = aiosqlite.Row
             async with db.execute(query) as cursor:
                 rows = await cursor.fetchall()
@@ -135,7 +145,7 @@ class DatabaseManager:
                 ]
 
     async def get_chat(self, chat_id: int) -> Optional[ChatRecord]:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             db.row_factory = aiosqlite.Row
             async with db.execute(
                 "SELECT chat_id, title, chat_type, username, is_active FROM chats WHERE chat_id = ?",
@@ -162,7 +172,7 @@ class DatabaseManager:
         content_type: str,
         sender_id: Optional[int] = None,
     ) -> None:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             await db.execute(
                 """
                 INSERT OR REPLACE INTO tracked_messages 
@@ -213,7 +223,7 @@ class DatabaseManager:
             query += " LIMIT ?"
             params.append(limit)
 
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             db.row_factory = aiosqlite.Row
             async with db.execute(query, tuple(params)) as cursor:
                 rows = await cursor.fetchall()
@@ -230,7 +240,7 @@ class DatabaseManager:
                 ]
 
     async def mark_message_deleted(self, chat_id: int, message_id: Union[int, str]) -> None:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             await db.execute(
                 """
                 UPDATE tracked_messages 
@@ -243,7 +253,7 @@ class DatabaseManager:
 
     async def get_tracked_count(self, chat_id: int) -> Dict[str, int]:
         """Returns message counts by content_type for a given chat."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             db.row_factory = aiosqlite.Row
             async with db.execute(
                 """
@@ -259,7 +269,7 @@ class DatabaseManager:
 
     async def get_latest_message_id(self, chat_id: int) -> Optional[int]:
         """Finds the maximum positive integer message_id recorded for a chat."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             async with db.execute(
                 """
                 SELECT message_id FROM tracked_messages 
@@ -279,7 +289,7 @@ class DatabaseManager:
     # ==================== JOB OPERATIONS ====================
 
     async def create_job(self, job: CleaningJob) -> None:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             await db.execute(
                 """
                 INSERT INTO cleaning_jobs (
@@ -340,12 +350,12 @@ class DatabaseManager:
         params.append(job_id)
         query = f"UPDATE cleaning_jobs SET {', '.join(updates)} WHERE job_id = ?"
 
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             await db.execute(query, tuple(params))
             await db.commit()
 
     async def get_job(self, job_id: str) -> Optional[CleaningJob]:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             db.row_factory = aiosqlite.Row
             async with db.execute(
                 "SELECT * FROM cleaning_jobs WHERE job_id = ?", (job_id,)
@@ -374,7 +384,7 @@ class DatabaseManager:
                 )
 
     async def get_active_jobs(self) -> List[CleaningJob]:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             db.row_factory = aiosqlite.Row
             async with db.execute(
                 "SELECT * FROM cleaning_jobs WHERE status IN ('running', 'paused') ORDER BY created_at DESC"
@@ -412,7 +422,7 @@ class DatabaseManager:
             GROUP BY sender_id 
             ORDER BY cnt DESC
         """
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             db.row_factory = aiosqlite.Row
             async with db.execute(query, (chat_id,)) as cursor:
                 rows = await cursor.fetchall()

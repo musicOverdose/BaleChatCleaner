@@ -194,7 +194,7 @@ async def cb_clean_start(call: CallbackQuery, state: FSMContext):
 
 
 @callbacks_router.callback_query(F.data.startswith("scope:"))
-async def cb_scope_selected(call: CallbackQuery, state: FSMContext):
+async def cb_scope_selected(call: CallbackQuery, state: FSMContext, db: DatabaseManager, engine: AntiGlitchEngine):
     parts = call.data.split(":")
     chat_id = int(parts[1])
     scope = parts[2]
@@ -202,10 +202,15 @@ async def cb_scope_selected(call: CallbackQuery, state: FSMContext):
     if scope == "custom":
         await state.set_state(CustomRangeState.waiting_for_range)
         await state.update_data(chat_id=chat_id)
+        latest_id = await db.get_latest_message_id(chat_id)
+        if not latest_id:
+            latest_id = await engine.detect_latest_message_id(chat_id)
+        hint_text = f"\nℹ️ *Latest detected message ID in this chat:* `{latest_id}`\n" if latest_id else ""
+        example_end = latest_id if latest_id else 100
         await call.message.edit_text(
             "🔢 **Custom ID Range**\n\n"
-            "Send the starting and ending message IDs as two numbers separated by a space.\n"
-            "Example: `150 600`"
+            f"Send the starting and ending message IDs as two numbers separated by a space.{hint_text}\n"
+            f"Example: `1 {example_end}`"
         )
         await call.answer()
         return
@@ -515,6 +520,11 @@ async def cb_launch_job(call: CallbackQuery, db: DatabaseManager, engine: AntiGl
 
     # Case A: Custom ID Range
     if start_id is not None and end_id is not None:
+        detected_head = await engine.detect_latest_message_id(chat_id)
+        if detected_head and end_id > detected_head:
+            logger.info(f"Clamping custom range end_id from {end_id} to detected chat head {detected_head}")
+            end_id = detected_head
+
         messages = []
         for mid in range(max(1, start_id), end_id + 1):
             if mid in tracked_map:
@@ -533,6 +543,8 @@ async def cb_launch_job(call: CallbackQuery, db: DatabaseManager, engine: AntiGl
     # Case B: Numeric Limit (e.g. Last 50 / 100)
     elif limit is not None:
         latest_id = await db.get_latest_message_id(chat_id)
+        if not latest_id:
+            latest_id = await engine.detect_latest_message_id(chat_id)
         if latest_id:
             start_seq = max(1, latest_id - limit + 1)
             messages = []

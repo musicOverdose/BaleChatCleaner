@@ -9,7 +9,13 @@ import logging
 import time
 from typing import List, Optional, Callable, Awaitable, Dict
 from aiogram import Bot
-from aiogram.exceptions import TelegramRetryAfter, TelegramBadRequest, TelegramForbiddenError
+from aiogram.exceptions import (
+    TelegramRetryAfter,
+    TelegramBadRequest,
+    TelegramForbiddenError,
+    TelegramNotFound,
+    TelegramAPIError,
+)
 
 from src.database.db import DatabaseManager
 from src.database.models import CleaningJob, TrackedMessage
@@ -56,6 +62,24 @@ class AntiGlitchEngine:
 
     def get_task(self, job_id: str) -> Optional[DeletionTask]:
         return self.active_tasks.get(job_id)
+
+    async def detect_latest_message_id(self, chat_id: int) -> Optional[int]:
+        """
+        Attempts to detect the current head message ID in the target chat.
+        Sends a momentary probe message and immediately deletes it.
+        Returns the message_id or None if permission denied.
+        """
+        try:
+            msg = await self.bot.send_message(chat_id=chat_id, text="🔍", disable_notification=True)
+            head_id = msg.message_id
+            try:
+                await self.bot.delete_message(chat_id=chat_id, message_id=head_id)
+            except Exception:
+                pass
+            return head_id
+        except Exception as e:
+            logger.debug(f"Could not auto-detect latest message ID via probe in chat {chat_id}: {e}")
+            return None
 
     async def execute_job(
         self,
@@ -154,7 +178,7 @@ class AntiGlitchEngine:
                     try:
                         try:
                             await self.bot.delete_message(chat_id=primary_chat, message_id=item.message_id)
-                        except TelegramBadRequest as sub_e:
+                        except (TelegramBadRequest, TelegramNotFound, TelegramAPIError) as sub_e:
                             if secondary_chat and ("not found" in str(sub_e).lower() or "bad request" in str(sub_e).lower()):
                                 # Fallback to secondary identifier
                                 await self.bot.delete_message(chat_id=secondary_chat, message_id=item.message_id)
@@ -173,10 +197,10 @@ class AntiGlitchEngine:
                             await on_progress(job, f"⚠️ Rate limited. Cooling down for {int(sleep_time)}s...")
                         await asyncio.sleep(sleep_time)
 
-                    except TelegramBadRequest as e:
+                    except (TelegramBadRequest, TelegramNotFound, TelegramAPIError) as e:
                         err_text = str(e).lower()
                         if "message to delete not found" in err_text or "not found" in err_text:
-                            # Message already deleted by admin/user
+                            # Message already deleted by admin/user or non-existent
                             job.skipped_count += 1
                             deleted_successfully = True
                         elif "message can't be deleted" in err_text:
@@ -184,6 +208,11 @@ class AntiGlitchEngine:
                             logger.debug(f"Message {item.message_id} cannot be deleted: {e}")
                             job.skipped_count += 1
                             deleted_successfully = True
+                        elif "permission_denied" in err_text or "forbidden" in err_text:
+                            logger.error(f"Permission denied deleting {item.message_id}: {e}")
+                            job.status = "failed"
+                            job.error_message = "Bot lacks delete rights or was removed from chat."
+                            break
                         else:
                             logger.warning(f"Bad request deleting {item.message_id}: {e}")
                             job.failed_count += 1
@@ -196,9 +225,14 @@ class AntiGlitchEngine:
                         break
 
                     except Exception as e:
-                        logger.error(f"Unexpected error deleting {item.message_id}: {e}")
-                        job.failed_count += 1
-                        deleted_successfully = True
+                        err_text = str(e).lower()
+                        if "not found" in err_text:
+                            job.skipped_count += 1
+                            deleted_successfully = True
+                        else:
+                            logger.error(f"Unexpected error deleting {item.message_id}: {e}")
+                            job.failed_count += 1
+                            deleted_successfully = True
 
                 if job.status == "failed":
                     break

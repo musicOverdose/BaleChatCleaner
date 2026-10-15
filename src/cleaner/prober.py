@@ -6,7 +6,12 @@ Allows inspecting the content_type of historic messages posted before the bot wa
 import logging
 from typing import Optional
 from aiogram import Bot
-from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
+from aiogram.exceptions import (
+    TelegramBadRequest,
+    TelegramForbiddenError,
+    TelegramNotFound,
+    TelegramAPIError,
+)
 from src.cleaner.filters import get_message_content_type
 
 logger = logging.getLogger(__name__)
@@ -46,15 +51,23 @@ class MessageProber:
 
             return content_type
 
-        except TelegramBadRequest as e:
+        except (TelegramBadRequest, TelegramNotFound, TelegramAPIError) as e:
             err_msg = str(e).lower()
-            if "not found" in err_msg or "message to forward not found" in err_msg:
+            if "not found" in err_msg or "message to forward not found" in err_msg or "message to be replied not found" in err_msg:
+                logger.debug(f"Message {message_id} not found during probe: {e}")
                 return None
-            logger.warning(f"Bad request probing message {message_id}: {e}")
+            if "permission_denied" in err_msg or "forbidden" in err_msg or "chat not found" in err_msg:
+                logger.debug(f"Cannot forward message {message_id} for probe: {e}")
+                return None
+            logger.warning(f"API error probing message {message_id}: {e}")
             return None
         except TelegramForbiddenError:
-            logger.error("Forbidden from forwarding to scratch chat. Check bot permissions.")
+            logger.debug(f"Forbidden from forwarding message {message_id} to scratch chat.")
             return None
         except Exception as e:
+            err_msg = str(e).lower()
+            if "not found" in err_msg:
+                logger.debug(f"Message {message_id} not found during probe: {e}")
+                return None
             logger.warning(f"Unexpected error probing message {message_id}: {e}")
             return None

@@ -120,3 +120,28 @@ async def test_database_lifecycle(tmp_path):
     latest_id = await db.get_latest_message_id(-1001234567)
     assert latest_id == 5
 
+
+@pytest.mark.asyncio
+async def test_database_concurrent_access(tmp_path):
+    import asyncio
+    db_file = str(tmp_path / "test_concurrency.db")
+    db = DatabaseManager(db_file)
+    await db.init_db()
+
+    # Simulate simultaneous reads and writes
+    async def writer():
+        for i in range(20):
+            await db.save_message(chat_id=100, message_id=i, date=i, content_type="text")
+            await asyncio.sleep(0.01)
+
+    async def reader():
+        for _ in range(20):
+            await db.get_chats()
+            await db.get_tracked_count(100)
+            await asyncio.sleep(0.01)
+
+    await asyncio.gather(writer(), reader(), writer(), reader())
+    counts = await db.get_tracked_count(100)
+    assert counts.get("text", 0) == 20
+
+
