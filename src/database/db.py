@@ -3,6 +3,7 @@ Async SQLite Database Manager for BaleChatCleaner.
 Handles chats, tracked messages, and persistent job states.
 """
 
+import os
 import aiosqlite
 import json
 import logging
@@ -68,6 +69,9 @@ class DatabaseManager:
 
     async def init_db(self):
         """Initializes tables and indices."""
+        db_dir = os.path.dirname(os.path.abspath(self.db_path))
+        if db_dir:
+            os.makedirs(db_dir, exist_ok=True)
         async with aiosqlite.connect(self.db_path) as db:
             await db.executescript(CREATE_TABLES_SQL)
             await db.commit()
