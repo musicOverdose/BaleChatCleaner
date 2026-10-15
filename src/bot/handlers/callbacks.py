@@ -31,6 +31,7 @@ callbacks_router = Router(name="callbacks")
 
 # In-memory dictionary for active wizard filter selections: {user_id: set_of_types}
 USER_FILTER_SELECTIONS: Dict[int, List[str]] = {}
+USER_WIZARD_DATA: Dict[int, Dict[str, Any]] = {}
 
 
 @callbacks_router.callback_query(F.data == "menu:main")
@@ -179,7 +180,10 @@ async def cb_chat_stats(call: CallbackQuery, db: DatabaseManager):
 
 
 @callbacks_router.callback_query(F.data.startswith("clean_start:"))
-async def cb_clean_start(call: CallbackQuery):
+async def cb_clean_start(call: CallbackQuery, state: FSMContext):
+    await state.clear()
+    USER_WIZARD_DATA.pop(call.from_user.id, None)
+    USER_FILTER_SELECTIONS.pop(call.from_user.id, None)
     chat_id = int(call.data.split(":")[1])
     await call.message.edit_text(
         "🎯 **Step 1: Choose Cleaning Scope**\n\n"
@@ -209,11 +213,138 @@ async def cb_scope_selected(call: CallbackQuery, state: FSMContext):
     await call.message.edit_text(
         f"🎯 **Target Scope:** `{scope}` messages\n\n"
         "**Step 2: Choose Filter Mode**\n\n"
+        "• **Keep ONLY Audio & Files**: Preserves music & documents, deletes everything else.\n"
         "• **Delete EVERYTHING**: Wipes all message types in the scope.\n"
         "• **Delete ONLY Selected**: E.g. delete only voice notes and photos.\n"
-        "• **Delete ALL EXCEPT (Inverted)**: Delete everything **except** audio and documents.",
+        "• **Delete ALL EXCEPT (Inverted)**: Delete everything **except** audio and documents.\n"
+        "• **Delete by Specific User**: Target messages sent by a particular member.",
         reply_markup=filter_mode_keyboard(chat_id, scope),
     )
+    await call.answer()
+
+
+@callbacks_router.callback_query(F.data.startswith("scope_back:"))
+async def cb_scope_back(call: CallbackQuery):
+    parts = call.data.split(":")
+    chat_id = int(parts[1])
+    scope = parts[2]
+    await call.message.edit_text(
+        f"🎯 **Target Scope:** `{scope}` messages\n\n"
+        "**Step 2: Choose Filter Mode**\n\n"
+        "• **Keep ONLY Audio & Files**: Preserves music & documents, deletes everything else.\n"
+        "• **Delete EVERYTHING**: Wipes all message types in the scope.\n"
+        "• **Delete ONLY Selected**: Delete only chosen types.\n"
+        "• **Delete ALL EXCEPT**: Inverted selection.\n"
+        "• **Delete by Specific User**: Clean messages sent by a particular member.",
+        reply_markup=filter_mode_keyboard(chat_id, scope),
+    )
+    await call.answer()
+
+
+@callbacks_router.callback_query(F.data.startswith("fkeepfiles:"))
+async def cb_fkeepfiles(call: CallbackQuery):
+    parts = call.data.split(":")
+    chat_id = int(parts[1])
+    scope = parts[2]
+    mode = "except"
+
+    USER_FILTER_SELECTIONS[call.from_user.id] = ["audio", "document"]
+    data = USER_WIZARD_DATA.setdefault(call.from_user.id, {})
+    data["filter_types"] = ["audio", "document"]
+
+    await call.message.edit_text(
+        "⚡ **Step 3: Choose Anti-Glitch Speed Profile**\n\n"
+        "🎵 **Rule:** Keep ONLY Audio & Documents (All text, photos, videos, etc. will be deleted)\n\n"
+        "Select a pacing profile:",
+        reply_markup=speed_keyboard(chat_id, scope, mode),
+    )
+    await call.answer()
+
+
+@callbacks_router.callback_query(F.data.startswith("fuser_menu:"))
+async def cb_fuser_menu(call: CallbackQuery, db: DatabaseManager):
+    parts = call.data.split(":")
+    chat_id = int(parts[1])
+    scope = parts[2]
+
+    senders = await db.get_chat_senders(chat_id)
+    text = (
+        "👤 **Delete by Specific User**\n\n"
+        "Select a member below or enter a numerical User ID manually to clean their messages:"
+    )
+    from src.bot.keyboards import chat_senders_keyboard
+    await call.message.edit_text(text, reply_markup=chat_senders_keyboard(chat_id, scope, senders))
+    await call.answer()
+
+
+@callbacks_router.callback_query(F.data.startswith("fusersel:"))
+async def cb_fusersel(call: CallbackQuery):
+    parts = call.data.split(":")
+    chat_id = int(parts[1])
+    scope = parts[2]
+    target_user_id = int(parts[3])
+
+    data = USER_WIZARD_DATA.setdefault(call.from_user.id, {})
+    data["target_user_id"] = target_user_id
+
+    from src.bot.keyboards import user_action_keyboard
+    await call.message.edit_text(
+        f"👤 **Selected User ID:** `{target_user_id}`\n\n"
+        "Choose an action for this user's messages:",
+        reply_markup=user_action_keyboard(chat_id, scope, target_user_id),
+    )
+    await call.answer()
+
+
+@callbacks_router.callback_query(F.data.startswith("fusermanual:"))
+async def cb_fusermanual(call: CallbackQuery, state: FSMContext):
+    parts = call.data.split(":")
+    chat_id = int(parts[1])
+    scope = parts[2]
+
+    from src.bot.handlers.admin import UserSpecificState
+    await state.set_state(UserSpecificState.waiting_for_user_id)
+    await state.update_data(chat_id=chat_id, scope=scope)
+    await call.message.edit_text(
+        "✏️ **Enter User ID Manually**\n\n"
+        "Send the numerical ID of the user whose messages you want to delete.\n"
+        "Example: `1194790059`"
+    )
+    await call.answer()
+
+
+@callbacks_router.callback_query(F.data.startswith("fuaction:"))
+async def cb_fuaction(call: CallbackQuery):
+    parts = call.data.split(":")
+    chat_id = int(parts[1])
+    scope = parts[2]
+    target_user_id = int(parts[3])
+    action = parts[4]
+
+    data = USER_WIZARD_DATA.setdefault(call.from_user.id, {})
+    data["target_user_id"] = target_user_id
+
+    if action == "all":
+        data["filter_types"] = []
+        USER_FILTER_SELECTIONS[call.from_user.id] = []
+        await call.message.edit_text(
+            f"⚡ **Step 3: Speed Profile for User `{target_user_id}` (Delete All Their Messages)**",
+            reply_markup=speed_keyboard(chat_id, scope, "all"),
+        )
+    elif action == "keepfiles":
+        data["filter_types"] = ["audio", "document"]
+        USER_FILTER_SELECTIONS[call.from_user.id] = ["audio", "document"]
+        await call.message.edit_text(
+            f"⚡ **Step 3: Speed Profile for User `{target_user_id}` (Keep Their Audio & Files)**",
+            reply_markup=speed_keyboard(chat_id, scope, "except"),
+        )
+    elif action == "custom":
+        data["filter_types"] = []
+        USER_FILTER_SELECTIONS[call.from_user.id] = []
+        await call.message.edit_text(
+            f"🧩 **Select Message Types to DELETE for User `{target_user_id}`:**",
+            reply_markup=filter_types_keyboard(chat_id, scope, "only", []),
+        )
     await call.answer()
 
 
@@ -321,6 +452,7 @@ async def cb_speed_selected(call: CallbackQuery, db: DatabaseManager):
     chat = await db.get_chat(chat_id)
     chat_title = chat.title if chat else f"Chat {chat_id}"
     selected_types = USER_FILTER_SELECTIONS.get(call.from_user.id, [])
+    target_user_id = USER_WIZARD_DATA.get(call.from_user.id, {}).get("target_user_id")
 
     if mode == "all":
         filter_summary = "All message types (Full Wipe)"
@@ -328,6 +460,9 @@ async def cb_speed_selected(call: CallbackQuery, db: DatabaseManager):
         filter_summary = f"Only delete: {', '.join(selected_types)}"
     else:
         filter_summary = f"Delete all EXCEPT: {', '.join(selected_types)}"
+
+    if target_user_id:
+        filter_summary += f"\n• **Target User:** `{target_user_id}`"
 
     profile_info = SPEED_PROFILES.get(speed, SPEED_PROFILES["ultra_safe"])
 
@@ -354,6 +489,7 @@ async def cb_launch_job(call: CallbackQuery, db: DatabaseManager, engine: AntiGl
     chat = await db.get_chat(chat_id)
     chat_title = chat.title if chat else f"Chat {chat_id}"
     selected_types = USER_FILTER_SELECTIONS.get(call.from_user.id, [])
+    target_user_id = USER_WIZARD_DATA.get(call.from_user.id, {}).get("target_user_id")
 
     # Fetch messages to clean
     limit = int(scope) if scope.isdigit() else None
@@ -372,6 +508,7 @@ async def cb_launch_job(call: CallbackQuery, db: DatabaseManager, engine: AntiGl
         limit=limit,
         start_id=start_id,
         end_id=end_id,
+        target_user_id=target_user_id,
     )
 
     tracked_map = {int(m.message_id): m for m in tracked if str(m.message_id).isdigit()}
@@ -382,7 +519,7 @@ async def cb_launch_job(call: CallbackQuery, db: DatabaseManager, engine: AntiGl
         for mid in range(max(1, start_id), end_id + 1):
             if mid in tracked_map:
                 messages.append(tracked_map[mid])
-            else:
+            elif target_user_id is None:
                 messages.append(
                     TrackedMessage(
                         chat_id=chat_id,
@@ -402,7 +539,7 @@ async def cb_launch_job(call: CallbackQuery, db: DatabaseManager, engine: AntiGl
             for mid in range(start_seq, latest_id + 1):
                 if mid in tracked_map:
                     messages.append(tracked_map[mid])
-                else:
+                elif target_user_id is None:
                     messages.append(
                         TrackedMessage(
                             chat_id=chat_id,
@@ -420,9 +557,12 @@ async def cb_launch_job(call: CallbackQuery, db: DatabaseManager, engine: AntiGl
     else:
         messages = tracked
 
+    if target_user_id is not None:
+        messages = [m for m in messages if m.sender_id == target_user_id]
+
     if not messages:
         await call.answer(
-            "⚠️ No messages found to clean. Send /check in your chat first so the bot knows the current ID, or use Custom ID Range.",
+            "⚠️ No messages found to clean matching this criteria.",
             show_alert=True,
         )
         return
@@ -433,6 +573,7 @@ async def cb_launch_job(call: CallbackQuery, db: DatabaseManager, engine: AntiGl
         chat_id=chat_id,
         chat_title=chat_title,
         chat_username=chat.username if chat else None,
+        target_user_id=target_user_id,
         status="pending",
         filter_mode=mode,
         filter_types=selected_types,
@@ -445,9 +586,10 @@ async def cb_launch_job(call: CallbackQuery, db: DatabaseManager, engine: AntiGl
 
     await db.create_job(job)
 
+    user_info = f" (User: `{target_user_id}`)" if target_user_id else ""
     status_message = await call.message.edit_text(
         f"🚀 **Cleaning Job `{job_id}` Launched!**\n\n"
-        f"Target: `{chat_title}`\n"
+        f"Target: `{chat_title}`{user_info}\n"
         f"Messages: `{len(messages)}`\n"
         "Initializing anti-glitch queue...",
         reply_markup=job_control_keyboard(job_id, "running"),

@@ -60,10 +60,34 @@ def scope_keyboard(chat_id: int) -> InlineKeyboardMarkup:
 
 def filter_mode_keyboard(chat_id: int, scope: str) -> InlineKeyboardMarkup:
     buttons = [
+        [InlineKeyboardButton(text="🎵 Keep ONLY Audio & Files (Delete Rest)", callback_data=f"fkeepfiles:{chat_id}:{scope}")],
         [InlineKeyboardButton(text="🗑 Delete EVERYTHING (All Types)", callback_data=f"fmode:{chat_id}:{scope}:all")],
         [InlineKeyboardButton(text="🎯 Delete ONLY Selected Types...", callback_data=f"fmode:{chat_id}:{scope}:only")],
         [InlineKeyboardButton(text="🛡 Delete ALL EXCEPT (Keep Selected)...", callback_data=f"fmode:{chat_id}:{scope}:except")],
+        [InlineKeyboardButton(text="👤 Delete by Specific User...", callback_data=f"fuser_menu:{chat_id}:{scope}")],
         [InlineKeyboardButton(text="🔙 Back", callback_data=f"clean_start:{chat_id}")],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def chat_senders_keyboard(chat_id: int, scope: str, senders: list) -> InlineKeyboardMarkup:
+    buttons = []
+    for s in senders[:8]:  # Show top 8 senders
+        sid = s["sender_id"]
+        cnt = s["count"]
+        buttons.append([InlineKeyboardButton(text=f"👤 User ID: {sid} ({cnt} msgs)", callback_data=f"fusersel:{chat_id}:{scope}:{sid}")])
+
+    buttons.append([InlineKeyboardButton(text="✏️ Enter User ID Manually", callback_data=f"fusermanual:{chat_id}:{scope}")])
+    buttons.append([InlineKeyboardButton(text="🔙 Back", callback_data=f"scope_back:{chat_id}:{scope}")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def user_action_keyboard(chat_id: int, scope: str, target_user_id: int) -> InlineKeyboardMarkup:
+    buttons = [
+        [InlineKeyboardButton(text="🗑 Delete ALL messages by this user", callback_data=f"fuaction:{chat_id}:{scope}:{target_user_id}:all")],
+        [InlineKeyboardButton(text="🎵 Keep Audio & Files (Delete rest by user)", callback_data=f"fuaction:{chat_id}:{scope}:{target_user_id}:keepfiles")],
+        [InlineKeyboardButton(text="🎯 Delete specific types by user...", callback_data=f"fuaction:{chat_id}:{scope}:{target_user_id}:custom")],
+        [InlineKeyboardButton(text="🔙 Back to Senders", callback_data=f"fuser_menu:{chat_id}:{scope}")],
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 

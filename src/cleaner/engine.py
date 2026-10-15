@@ -107,6 +107,12 @@ class AntiGlitchEngine:
                     logger.info(f"Job {job.job_id} resumed.")
                     await self.db.update_job_progress(job.job_id, status="running")
 
+                # 2.5 Check target user match if specified
+                if job.target_user_id is not None:
+                    if item.sender_id != job.target_user_id:
+                        job.skipped_count += 1
+                        continue
+
                 # 3. Check filter match (if item has content_type)
                 should_delete = matches_filter(item.content_type, job.filter_mode, job.filter_types)
 

@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS cleaning_jobs (
     chat_id INTEGER NOT NULL,
     chat_title TEXT NOT NULL,
     chat_username TEXT,
+    target_user_id INTEGER,
     status TEXT NOT NULL,
     filter_mode TEXT NOT NULL,
     filter_types TEXT NOT NULL,
@@ -83,6 +84,10 @@ class DatabaseManager:
                 pass
             try:
                 await db.execute("ALTER TABLE cleaning_jobs ADD COLUMN chat_username TEXT")
+            except Exception:
+                pass
+            try:
+                await db.execute("ALTER TABLE cleaning_jobs ADD COLUMN target_user_id INTEGER")
             except Exception:
                 pass
             await db.commit()
@@ -176,9 +181,14 @@ class DatabaseManager:
         limit: Optional[int] = None,
         start_id: Optional[int] = None,
         end_id: Optional[int] = None,
+        target_user_id: Optional[int] = None,
     ) -> List[TrackedMessage]:
         query = "SELECT chat_id, message_id, date, content_type, sender_id FROM tracked_messages WHERE chat_id = ? AND is_deleted = 0"
         params: List[Any] = [chat_id]
+
+        if target_user_id is not None:
+            query += " AND sender_id = ?"
+            params.append(target_user_id)
 
         if filter_mode == "only" and filter_types:
             placeholders = ",".join("?" for _ in filter_types)
@@ -273,16 +283,17 @@ class DatabaseManager:
             await db.execute(
                 """
                 INSERT INTO cleaning_jobs (
-                    job_id, chat_id, chat_title, chat_username, status, filter_mode, filter_types,
+                    job_id, chat_id, chat_title, chat_username, target_user_id, status, filter_mode, filter_types,
                     scope_type, start_id, end_id, target_count, deleted_count,
                     skipped_count, failed_count, speed_profile
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job.job_id,
                     job.chat_id,
                     job.chat_title,
                     job.chat_username,
+                    job.target_user_id,
                     job.status,
                     job.filter_mode,
                     json.dumps(job.filter_types),
@@ -347,6 +358,7 @@ class DatabaseManager:
                     chat_id=row["chat_id"],
                     chat_title=row["chat_title"],
                     chat_username=row["chat_username"] if "chat_username" in row.keys() else None,
+                    target_user_id=row["target_user_id"] if "target_user_id" in row.keys() else None,
                     status=row["status"],
                     filter_mode=row["filter_mode"],
                     filter_types=json.loads(row["filter_types"]),
@@ -374,6 +386,7 @@ class DatabaseManager:
                         chat_id=row["chat_id"],
                         chat_title=row["chat_title"],
                         chat_username=row["chat_username"] if "chat_username" in row.keys() else None,
+                        target_user_id=row["target_user_id"] if "target_user_id" in row.keys() else None,
                         status=row["status"],
                         filter_mode=row["filter_mode"],
                         filter_types=json.loads(row["filter_types"]),
@@ -389,3 +402,18 @@ class DatabaseManager:
                     )
                     for row in rows
                 ]
+
+    async def get_chat_senders(self, chat_id: int) -> List[Dict[str, Any]]:
+        """Returns distinct senders and their active message count in a chat."""
+        query = """
+            SELECT sender_id, COUNT(*) as cnt 
+            FROM tracked_messages 
+            WHERE chat_id = ? AND sender_id IS NOT NULL AND is_deleted = 0 
+            GROUP BY sender_id 
+            ORDER BY cnt DESC
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(query, (chat_id,)) as cursor:
+                rows = await cursor.fetchall()
+                return [{"sender_id": row["sender_id"], "count": row["cnt"]} for row in rows]

@@ -18,6 +18,10 @@ class CustomRangeState(StatesGroup):
     waiting_for_range = State()
 
 
+class UserSpecificState(StatesGroup):
+    waiting_for_user_id = State()
+
+
 @admin_router.message(CommandStart(), F.chat.type == "private")
 @admin_router.message(Command("panel"), F.chat.type == "private")
 async def cmd_start(message: Message, state: FSMContext):
@@ -28,7 +32,8 @@ async def cmd_start(message: Message, state: FSMContext):
         "✨ **Features:**\n"
         "• Paced token-bucket rate limiting (prevents channel glitches & desync).\n"
         "• Filter by specific message types (Audio, Video, Photo, Docs, etc.).\n"
-        "• **Negation Filter**: Delete all messages *except* your chosen types.\n"
+        "• **Negation Filter**: Delete all messages *except* your chosen types (e.g. keep audio & files).\n"
+        "• **User-Specific Cleaning**: Target messages sent by a specific user.\n"
         "• Live real-time control (Pause, Resume, Abort) with progress tracking.\n\n"
         "Select an option below to manage your chats:"
     )
@@ -96,3 +101,27 @@ async def process_custom_range(message: Message, state: FSMContext):
         "Now choose your **Filter Mode**:"
     )
     await message.reply(prompt, reply_markup=filter_mode_keyboard(chat_id, scope_str))
+
+
+@admin_router.message(UserSpecificState.waiting_for_user_id, F.chat.type == "private")
+async def process_user_id(message: Message, state: FSMContext):
+    data = await state.get_data()
+    chat_id = data.get("chat_id")
+    scope = data.get("scope", "all")
+    text = message.text.strip()
+    if not text.isdigit():
+        await message.reply(
+            "❌ **Invalid User ID**\n"
+            "Please send a numerical User ID.\n"
+            "Example: `1194790059`"
+        )
+        return
+
+    target_user_id = int(text)
+    await state.update_data(target_user_id=target_user_id)
+    from src.bot.keyboards import user_action_keyboard
+    prompt = (
+        f"👤 **Target User ID Selected:** `{target_user_id}`\n\n"
+        "Choose an action for this user's messages:"
+    )
+    await message.reply(prompt, reply_markup=user_action_keyboard(chat_id, scope, target_user_id))

@@ -37,6 +37,7 @@ class CleaningJob:
     filter_types: List[str]  # e.g. ['audio', 'document']
     scope_type: str  # last_n, id_range, all_tracked
     chat_username: Optional[str] = None
+    target_user_id: Optional[int] = None
     start_id: Optional[int] = None
     end_id: Optional[int] = None
     target_count: int = 0
