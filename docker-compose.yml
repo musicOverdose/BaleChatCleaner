@@ -5,8 +5,18 @@ services:
       dockerfile: Dockerfile
     container_name: bale-chat-cleaner
     restart: unless-stopped
-    env_file:
-      - .env
+    environment:
+      - BOT_TOKEN=${BOT_TOKEN}
+      - ADMIN_IDS=${ADMIN_IDS:-}
+      - BALE_API_ENDPOINT=${BALE_API_ENDPOINT:-https://tapi.bale.ai}
+      - DB_PATH=${DB_PATH:-/app/data/cleaner.db}
+      - DEFAULT_CHANNEL_DELAY=${DEFAULT_CHANNEL_DELAY:-0.12}
+      - DEFAULT_GROUP_DELAY=${DEFAULT_GROUP_DELAY:-0.06}
+      - SYNC_PAUSE_INTERVAL=${SYNC_PAUSE_INTERVAL:-25}
+      - SYNC_PAUSE_DURATION=${SYNC_PAUSE_DURATION:-1.5}
+      - PROBE_SCRATCH_CHAT_ID=${PROBE_SCRATCH_CHAT_ID:-0}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - PYTHONUNBUFFERED=1
     volumes:
       - ./data:/app/data
     logging:
@@ -14,6 +24,3 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-    environment:
-      - DB_PATH=/app/data/cleaner.db
-      - PYTHONUNBUFFERED=1
