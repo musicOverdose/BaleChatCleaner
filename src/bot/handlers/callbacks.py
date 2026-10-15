@@ -364,7 +364,8 @@ async def cb_launch_job(call: CallbackQuery, db: DatabaseManager, engine: AntiGl
         start_id = int(r_parts[1])
         end_id = int(r_parts[2])
 
-    messages = await db.get_tracked_messages_to_clean(
+    # Fetch any already tracked messages in SQLite
+    tracked = await db.get_tracked_messages_to_clean(
         chat_id=chat_id,
         filter_mode=mode,
         filter_types=selected_types,
@@ -373,47 +374,58 @@ async def cb_launch_job(call: CallbackQuery, db: DatabaseManager, engine: AntiGl
         end_id=end_id,
     )
 
-    # For numeric scope (e.g. Last 50/100) in 'all' mode, sweep backwards from latest known ID
-    if limit:
+    tracked_map = {int(m.message_id): m for m in tracked if str(m.message_id).isdigit()}
+
+    # Case A: Custom ID Range
+    if start_id is not None and end_id is not None:
+        messages = []
+        for mid in range(max(1, start_id), end_id + 1):
+            if mid in tracked_map:
+                messages.append(tracked_map[mid])
+            else:
+                messages.append(
+                    TrackedMessage(
+                        chat_id=chat_id,
+                        message_id=mid,
+                        date=0,
+                        content_type="all" if mode == "all" else "unknown",
+                    )
+                )
+        messages.sort(key=lambda m: int(m.message_id) if str(m.message_id).isdigit() else 0, reverse=True)
+
+    # Case B: Numeric Limit (e.g. Last 50 / 100)
+    elif limit is not None:
         latest_id = await db.get_latest_message_id(chat_id)
-        if mode == "all" and latest_id and len(messages) < limit:
-            existing_ids = {str(m.message_id) for m in messages}
+        if latest_id:
             start_seq = max(1, latest_id - limit + 1)
+            messages = []
             for mid in range(start_seq, latest_id + 1):
-                if str(mid) not in existing_ids:
+                if mid in tracked_map:
+                    messages.append(tracked_map[mid])
+                else:
                     messages.append(
                         TrackedMessage(
                             chat_id=chat_id,
                             message_id=mid,
                             date=0,
-                            content_type="all",
+                            content_type="all" if mode == "all" else "unknown",
                         )
                     )
-            # Sort descending (newest first)
             messages.sort(key=lambda m: int(m.message_id) if str(m.message_id).isdigit() else 0, reverse=True)
             messages = messages[:limit]
-
-    # If no tracked messages were found
-    if not messages:
-        if start_id and end_id:
-            messages = [
-                TrackedMessage(
-                    chat_id=chat_id,
-                    message_id=mid,
-                    date=0,
-                    content_type="all" if mode == "all" else "unknown",
-                )
-                for mid in range(start_id, end_id + 1)
-            ]
-        elif limit:
-            await call.answer(
-                "⚠️ No messages found. Send /check in your group first so the bot knows the current message ID, or use Custom ID Range.",
-                show_alert=True,
-            )
-            return
         else:
-            await call.answer("No tracked messages matched the selected filter.", show_alert=True)
-            return
+            messages = tracked
+
+    # Case C: All Tracked
+    else:
+        messages = tracked
+
+    if not messages:
+        await call.answer(
+            "⚠️ No messages found to clean. Send /check in your chat first so the bot knows the current ID, or use Custom ID Range.",
+            show_alert=True,
+        )
+        return
 
     job_id = str(uuid.uuid4())[:8]
     job = CleaningJob(

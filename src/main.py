@@ -47,7 +47,8 @@ async def main():
     bot, dp = create_bot_and_dispatcher(settings)
 
     # Initialize Message Prober and Anti-Glitch Engine
-    prober = MessageProber(bot, scratch_chat_id=settings.PROBE_SCRATCH_CHAT_ID)
+    scratch_id = settings.PROBE_SCRATCH_CHAT_ID or (settings.ADMIN_IDS[0] if settings.ADMIN_IDS else None)
+    prober = MessageProber(bot, scratch_chat_id=scratch_id)
     engine = AntiGlitchEngine(bot, db, prober=prober)
 
     # Register Middlewares
