@@ -127,22 +127,31 @@ class AntiGlitchEngine:
                 deleted_successfully = False
                 attempts = 0
 
-                # Determine target chat identifier: prefer @username if available
-                target_chat = job.chat_id
+                # Determine target chat identifier:
+                # In Bale, groups require numeric chat_id. Channels with @username prefer @username.
+                primary_chat = job.chat_id
+                secondary_chat = None
+
                 if getattr(job, "chat_username", None):
                     uname = job.chat_username.strip()
                     if uname:
-                        target_chat = uname if uname.startswith("@") else f"@{uname}"
+                        formatted_uname = uname if uname.startswith("@") else f"@{uname}"
+                        if str(job.chat_id).startswith("-"):
+                            primary_chat = formatted_uname
+                            secondary_chat = job.chat_id
+                        else:
+                            primary_chat = job.chat_id
+                            secondary_chat = formatted_uname
 
                 while not deleted_successfully and attempts < 3:
                     attempts += 1
                     try:
                         try:
-                            await self.bot.delete_message(chat_id=target_chat, message_id=item.message_id)
+                            await self.bot.delete_message(chat_id=primary_chat, message_id=item.message_id)
                         except TelegramBadRequest as sub_e:
-                            if target_chat != job.chat_id and ("chat not found" in str(sub_e).lower() or "not found" in str(sub_e).lower()):
-                                # Fallback to numeric chat_id
-                                await self.bot.delete_message(chat_id=job.chat_id, message_id=item.message_id)
+                            if secondary_chat and ("not found" in str(sub_e).lower() or "bad request" in str(sub_e).lower()):
+                                # Fallback to secondary identifier
+                                await self.bot.delete_message(chat_id=secondary_chat, message_id=item.message_id)
                             else:
                                 raise sub_e
 

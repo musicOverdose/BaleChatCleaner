@@ -14,6 +14,42 @@ logger = logging.getLogger(__name__)
 tracker_router = Router(name="tracker")
 
 
+@tracker_router.message(Command("check", "ping", "status"), F.chat.type.in_({"group", "supergroup", "channel"}))
+@tracker_router.channel_post(Command("check", "ping", "status"))
+async def check_group_status(message: Message, db: DatabaseManager):
+    """
+    Replies in chat to confirm bot presence, log current message ID, and report stats.
+    """
+    chat_id = message.chat.id
+    chat_title = message.chat.title or f"Chat {chat_id}"
+    chat_username = message.chat.username
+    uname_str = f"@{chat_username}" if chat_username else f"ID: {chat_id}"
+
+    await db.upsert_chat(chat_id=chat_id, title=chat_title, chat_type=message.chat.type, username=chat_username)
+    await db.save_message(
+        chat_id=chat_id,
+        message_id=str(message.message_id),
+        date=int(message.date.timestamp()) if message.date else 0,
+        content_type="text",
+        sender_id=message.from_user.id if message.from_user else None,
+    )
+    stats = await db.get_tracked_count(chat_id)
+    total = sum(stats.values())
+    stats_breakdown = ", ".join(f"{k}: {v}" for k, v in stats.items()) or "None"
+
+    try:
+        await message.reply(
+            f"🤖 **BaleChatCleaner Status**\n\n"
+            f"• **Chat:** {chat_title} (`{uname_str}`)\n"
+            f"• **Chat ID:** `{chat_id}`\n"
+            f"• **Latest Message ID:** `{message.message_id}`\n"
+            f"• **Tracked Messages:** `{total}` ({stats_breakdown})\n\n"
+            "🧹 *To configure cleaning, message the bot in private chat: `/panel` or `/clean`.*"
+        )
+    except Exception as e:
+        logger.warning(f"Could not send reply in chat {chat_id}: {e}")
+
+
 @tracker_router.channel_post()
 @tracker_router.message(F.chat.type.in_({"group", "supergroup", "channel"}))
 async def track_chat_message(message: Message, db: DatabaseManager):
@@ -99,39 +135,4 @@ async def track_bot_membership(event: ChatMemberUpdated, db: DatabaseManager):
         title = chat.title or f"Chat {chat.id}"
         await db.upsert_chat(chat_id=chat.id, title=title, chat_type=chat.type, username=chat.username)
         logger.info(f"Bot registered in chat {title} (@{chat.username}) with status '{new_status}'")
-
-
-@tracker_router.message(Command("check", "ping", "status"), F.chat.type.in_({"group", "supergroup"}))
-async def check_group_status(message: Message, db: DatabaseManager):
-    """
-    Replies in group to confirm bot presence, log current message ID, and remind admin of setup.
-    """
-    chat_id = message.chat.id
-    chat_title = message.chat.title or f"Chat {chat_id}"
-    chat_username = message.chat.username
-
-    await db.upsert_chat(chat_id=chat_id, title=chat_title, chat_type=message.chat.type, username=chat_username)
-    await db.save_message(
-        chat_id=chat_id,
-        message_id=str(message.message_id),
-        date=int(message.date.timestamp()) if message.date else 0,
-        content_type="text",
-        sender_id=message.from_user.id if message.from_user else None,
-    )
-    stats = await db.get_tracked_count(chat_id)
-    total = sum(stats.values())
-    stats_breakdown = ", ".join(f"{k}: {v}" for k, v in stats.items()) or "None"
-
-    await message.reply(
-        f"🤖 **BaleChatCleaner Status**\n\n"
-        f"• **Group:** {chat_title}\n"
-        f"• **Group ID:** `{chat_id}`\n"
-        f"• **Latest Message ID:** `{message.message_id}`\n"
-        f"• **Tracked Messages:** `{total}` ({stats_breakdown})\n\n"
-        "💡 *If normal member messages are not being counted:*\n"
-        "1. Open `@BotFather` in Bale messenger.\n"
-        "2. Send `/setprivacy` -> Select this bot -> Choose **`Disable`**.\n"
-        "3. Ensure this bot is an **Administrator** with **Delete Messages** permission.\n\n"
-        "🧹 *To configure cleaning, message the bot in private chat: `/panel` or `/clean`.*"
-    )
 
