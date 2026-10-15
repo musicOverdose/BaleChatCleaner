@@ -86,8 +86,9 @@ async def main():
         logger.info(f"Bot connected successfully as @{bot_info.username} ({bot_info.id})")
         logger.info(f"Authorized Admins: {settings.ADMIN_IDS or 'Open / Not specified'}")
 
-        # Start Long Polling
-        polling_task = asyncio.create_task(dp.start_polling(bot))
+        # Start Long Polling (explicitly requesting message, channel_post, callback_query)
+        allowed_updates = ["message", "edited_message", "channel_post", "edited_channel_post", "callback_query", "my_chat_member"]
+        polling_task = asyncio.create_task(dp.start_polling(bot, allowed_updates=allowed_updates))
 
         # Wait until stop_event is signaled
         await stop_event.wait()

@@ -1,6 +1,6 @@
 """
-Background Message Tracker Handler.
-Passively logs incoming messages in channels and groups for accurate historical cleaning.
+Background Message Tracker and Forward Listener Handler.
+Supports both direct channel/group message indexing and instant forward-to-register.
 """
 
 import logging
@@ -14,17 +14,19 @@ tracker_router = Router(name="tracker")
 
 
 @tracker_router.channel_post()
-@tracker_router.message(F.chat.type.in_({"group", "supergroup"}))
+@tracker_router.message(F.chat.type.in_({"group", "supergroup", "channel"}))
 async def track_chat_message(message: Message, db: DatabaseManager):
     """
     Indexes messages posted in channels or groups where the bot is present.
+    In Bale, channel posts can arrive under either message or channel_post.
     """
     chat_id = message.chat.id
     chat_title = message.chat.title or f"Chat {chat_id}"
     chat_type = message.chat.type
+    chat_username = message.chat.username
 
-    # Ensure chat is recorded
-    await db.upsert_chat(chat_id=chat_id, title=chat_title, chat_type=chat_type)
+    # Ensure chat is recorded with username
+    await db.upsert_chat(chat_id=chat_id, title=chat_title, chat_type=chat_type, username=chat_username)
 
     # Detect primary content type
     content_type = get_message_content_type(message)
@@ -33,12 +35,55 @@ async def track_chat_message(message: Message, db: DatabaseManager):
 
     await db.save_message(
         chat_id=chat_id,
-        message_id=message.message_id,
+        message_id=str(message.message_id),
         date=msg_date,
         content_type=content_type,
         sender_id=sender_id,
     )
-    logger.debug(f"Tracked msg {message.message_id} in {chat_title} [{content_type}]")
+    logger.info(f"✅ Tracked msg {message.message_id} in {chat_title} (@{chat_username}) [{content_type}]")
+
+
+@tracker_router.message(F.chat.type == "private", F.forward_from_chat)
+async def track_forwarded_message(message: Message, db: DatabaseManager):
+    """
+    Registers a channel/group and its message ID when an admin forwards a post to the bot.
+    This is the most reliable way in Bale to discover channels and extract exact message IDs.
+    """
+    f_chat = message.forward_from_chat
+    orig_msg_id = message.forward_from_message_id
+    chat_id = f_chat.id
+    chat_title = f_chat.title or f"Chat {chat_id}"
+    chat_type = f_chat.type
+    chat_username = f_chat.username
+
+    # Upsert the chat into database
+    await db.upsert_chat(chat_id=chat_id, title=chat_title, chat_type=chat_type, username=chat_username)
+
+    # Detect content type
+    content_type = get_message_content_type(message)
+    msg_date = int(message.forward_date.timestamp()) if message.forward_date else 0
+
+    if orig_msg_id is not None:
+        await db.save_message(
+            chat_id=chat_id,
+            message_id=str(orig_msg_id),
+            date=msg_date,
+            content_type=content_type,
+            sender_id=None,
+        )
+
+    uname_str = f"@{chat_username}" if chat_username else f"ID: {chat_id}"
+    logger.info(f"Channel {chat_title} ({uname_str}) registered via forwarded message {orig_msg_id}")
+
+    await message.reply(
+        f"✅ **Channel Detected & Registered!**\n\n"
+        f"• **Title:** {chat_title}\n"
+        f"• **Channel Handle:** `{uname_str}`\n"
+        f"• **Channel ID:** `{chat_id}`\n"
+        f"• **Extracted Message ID:** `{orig_msg_id}`\n"
+        f"• **Detected Type:** `{content_type}`\n\n"
+        "💡 *You can now open `/panel` or `/clean` to configure cleaning for this channel.*"
+    )
 
 
 @tracker_router.my_chat_member()
@@ -51,5 +96,5 @@ async def track_bot_membership(event: ChatMemberUpdated, db: DatabaseManager):
 
     if new_status in ("administrator", "member"):
         title = chat.title or f"Chat {chat.id}"
-        await db.upsert_chat(chat_id=chat.id, title=title, chat_type=chat.type)
-        logger.info(f"Bot registered in chat {title} ({chat.id}) with status '{new_status}'")
+        await db.upsert_chat(chat_id=chat.id, title=title, chat_type=chat.type, username=chat.username)
+        logger.info(f"Bot registered in chat {title} (@{chat.username}) with status '{new_status}'")

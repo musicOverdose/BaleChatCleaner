@@ -3,7 +3,7 @@ Data models and type definitions for BaleChatCleaner.
 """
 
 from dataclasses import dataclass
-from typing import Optional, List
+from typing import Optional, List, Union
 from datetime import datetime
 
 
@@ -12,6 +12,7 @@ class ChatRecord:
     chat_id: int
     title: str
     chat_type: str  # 'channel', 'supergroup', 'group'
+    username: Optional[str] = None
     is_active: bool = True
     added_at: Optional[datetime] = None
 
@@ -19,7 +20,7 @@ class ChatRecord:
 @dataclass
 class TrackedMessage:
     chat_id: int
-    message_id: int
+    message_id: Union[int, str]
     date: int  # Unix timestamp
     content_type: str  # text, photo, video, audio, document, voice, sticker, animation, etc.
     sender_id: Optional[int] = None
@@ -35,6 +36,7 @@ class CleaningJob:
     filter_mode: str  # all, only, except
     filter_types: List[str]  # e.g. ['audio', 'document']
     scope_type: str  # last_n, id_range, all_tracked
+    chat_username: Optional[str] = None
     start_id: Optional[int] = None
     end_id: Optional[int] = None
     target_count: int = 0

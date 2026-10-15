@@ -396,6 +396,7 @@ async def cb_launch_job(call: CallbackQuery, db: DatabaseManager, engine: AntiGl
         job_id=job_id,
         chat_id=chat_id,
         chat_title=chat_title,
+        chat_username=chat.username if chat else None,
         status="pending",
         filter_mode=mode,
         filter_types=selected_types,

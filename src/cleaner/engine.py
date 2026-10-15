@@ -127,10 +127,17 @@ class AntiGlitchEngine:
                 deleted_successfully = False
                 attempts = 0
 
+                # Determine target chat identifier: prefer @username if available
+                target_chat = job.chat_id
+                if getattr(job, "chat_username", None):
+                    uname = job.chat_username.strip()
+                    if uname:
+                        target_chat = uname if uname.startswith("@") else f"@{uname}"
+
                 while not deleted_successfully and attempts < 3:
                     attempts += 1
                     try:
-                        await self.bot.delete_message(chat_id=job.chat_id, message_id=item.message_id)
+                        await self.bot.delete_message(chat_id=target_chat, message_id=item.message_id)
                         job.deleted_count += 1
                         await self.db.mark_message_deleted(job.chat_id, item.message_id)
                         deleted_successfully = True

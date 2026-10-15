@@ -7,7 +7,7 @@ import os
 import aiosqlite
 import json
 import logging
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Union
 from datetime import datetime
 from src.database.models import ChatRecord, TrackedMessage, CleaningJob
 
@@ -18,13 +18,14 @@ CREATE TABLE IF NOT EXISTS chats (
     chat_id INTEGER PRIMARY KEY,
     title TEXT NOT NULL,
     chat_type TEXT NOT NULL,
+    username TEXT,
     is_active INTEGER NOT NULL DEFAULT 1,
     added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS tracked_messages (
     chat_id INTEGER NOT NULL,
-    message_id INTEGER NOT NULL,
+    message_id TEXT NOT NULL,
     date INTEGER NOT NULL,
     content_type TEXT NOT NULL,
     sender_id INTEGER,
@@ -42,6 +43,7 @@ CREATE TABLE IF NOT EXISTS cleaning_jobs (
     job_id TEXT PRIMARY KEY,
     chat_id INTEGER NOT NULL,
     chat_title TEXT NOT NULL,
+    chat_username TEXT,
     status TEXT NOT NULL,
     filter_mode TEXT NOT NULL,
     filter_types TEXT NOT NULL,
@@ -68,34 +70,46 @@ class DatabaseManager:
         self.db_path = db_path
 
     async def init_db(self):
-        """Initializes tables and indices."""
+        """Initializes tables, indices, and ensures migrations for existing schemas."""
         db_dir = os.path.dirname(os.path.abspath(self.db_path))
         if db_dir:
             os.makedirs(db_dir, exist_ok=True)
         async with aiosqlite.connect(self.db_path) as db:
             await db.executescript(CREATE_TABLES_SQL)
+            # Safe column migration for existing databases
+            try:
+                await db.execute("ALTER TABLE chats ADD COLUMN username TEXT")
+            except Exception:
+                pass
+            try:
+                await db.execute("ALTER TABLE cleaning_jobs ADD COLUMN chat_username TEXT")
+            except Exception:
+                pass
             await db.commit()
         logger.info(f"Database initialized at {self.db_path}")
 
     # ==================== CHAT OPERATIONS ====================
 
-    async def upsert_chat(self, chat_id: int, title: str, chat_type: str) -> None:
+    async def upsert_chat(
+        self, chat_id: int, title: str, chat_type: str, username: Optional[str] = None
+    ) -> None:
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
                 """
-                INSERT INTO chats (chat_id, title, chat_type, is_active)
-                VALUES (?, ?, ?, 1)
+                INSERT INTO chats (chat_id, title, chat_type, username, is_active)
+                VALUES (?, ?, ?, ?, 1)
                 ON CONFLICT(chat_id) DO UPDATE SET
                     title=excluded.title,
                     chat_type=excluded.chat_type,
+                    username=COALESCE(excluded.username, chats.username),
                     is_active=1
                 """,
-                (chat_id, title, chat_type),
+                (chat_id, title, chat_type, username),
             )
             await db.commit()
 
     async def get_chats(self, active_only: bool = True) -> List[ChatRecord]:
-        query = "SELECT chat_id, title, chat_type, is_active, added_at FROM chats"
+        query = "SELECT chat_id, title, chat_type, username, is_active, added_at FROM chats"
         if active_only:
             query += " WHERE is_active = 1"
         query += " ORDER BY added_at DESC"
@@ -109,6 +123,7 @@ class DatabaseManager:
                         chat_id=row["chat_id"],
                         title=row["title"],
                         chat_type=row["chat_type"],
+                        username=row["username"] if "username" in row.keys() else None,
                         is_active=bool(row["is_active"]),
                     )
                     for row in rows
@@ -118,7 +133,7 @@ class DatabaseManager:
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             async with db.execute(
-                "SELECT chat_id, title, chat_type, is_active FROM chats WHERE chat_id = ?",
+                "SELECT chat_id, title, chat_type, username, is_active FROM chats WHERE chat_id = ?",
                 (chat_id,),
             ) as cursor:
                 row = await cursor.fetchone()
@@ -127,6 +142,7 @@ class DatabaseManager:
                         chat_id=row["chat_id"],
                         title=row["title"],
                         chat_type=row["chat_type"],
+                        username=row["username"] if "username" in row.keys() else None,
                         is_active=bool(row["is_active"]),
                     )
                 return None
@@ -136,7 +152,7 @@ class DatabaseManager:
     async def save_message(
         self,
         chat_id: int,
-        message_id: int,
+        message_id: Union[int, str],
         date: int,
         content_type: str,
         sender_id: Optional[int] = None,
@@ -148,7 +164,7 @@ class DatabaseManager:
                 (chat_id, message_id, date, content_type, sender_id, is_deleted)
                 VALUES (?, ?, ?, ?, ?, 0)
                 """,
-                (chat_id, message_id, date, content_type, sender_id),
+                (chat_id, str(message_id), date, content_type, sender_id),
             )
             await db.commit()
 
@@ -174,14 +190,14 @@ class DatabaseManager:
             params.extend(filter_types)
 
         if start_id is not None:
-            query += " AND message_id >= ?"
+            query += " AND CAST(message_id AS INTEGER) >= ?"
             params.append(start_id)
 
         if end_id is not None:
-            query += " AND message_id <= ?"
+            query += " AND CAST(message_id AS INTEGER) <= ?"
             params.append(end_id)
 
-        query += " ORDER BY message_id DESC"
+        query += " ORDER BY rowid DESC"
 
         if limit is not None:
             query += " LIMIT ?"
@@ -203,7 +219,7 @@ class DatabaseManager:
                     for row in rows
                 ]
 
-    async def mark_message_deleted(self, chat_id: int, message_id: int) -> None:
+    async def mark_message_deleted(self, chat_id: int, message_id: Union[int, str]) -> None:
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
                 """
@@ -211,7 +227,7 @@ class DatabaseManager:
                 SET is_deleted = 1 
                 WHERE chat_id = ? AND message_id = ?
                 """,
-                (chat_id, message_id),
+                (chat_id, str(message_id)),
             )
             await db.commit()
 
@@ -238,15 +254,16 @@ class DatabaseManager:
             await db.execute(
                 """
                 INSERT INTO cleaning_jobs (
-                    job_id, chat_id, chat_title, status, filter_mode, filter_types,
+                    job_id, chat_id, chat_title, chat_username, status, filter_mode, filter_types,
                     scope_type, start_id, end_id, target_count, deleted_count,
                     skipped_count, failed_count, speed_profile
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job.job_id,
                     job.chat_id,
                     job.chat_title,
+                    job.chat_username,
                     job.status,
                     job.filter_mode,
                     json.dumps(job.filter_types),
@@ -310,6 +327,7 @@ class DatabaseManager:
                     job_id=row["job_id"],
                     chat_id=row["chat_id"],
                     chat_title=row["chat_title"],
+                    chat_username=row["chat_username"] if "chat_username" in row.keys() else None,
                     status=row["status"],
                     filter_mode=row["filter_mode"],
                     filter_types=json.loads(row["filter_types"]),
@@ -336,6 +354,7 @@ class DatabaseManager:
                         job_id=row["job_id"],
                         chat_id=row["chat_id"],
                         chat_title=row["chat_title"],
+                        chat_username=row["chat_username"] if "chat_username" in row.keys() else None,
                         status=row["status"],
                         filter_mode=row["filter_mode"],
                         filter_types=json.loads(row["filter_types"]),
