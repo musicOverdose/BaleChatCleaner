@@ -96,3 +96,8 @@ async def test_database_lifecycle(tmp_path):
     updated_job = await db.get_job("test-job-1")
     assert updated_job.status == "completed"
     assert updated_job.deleted_count == 2
+
+    # 7. Test Latest Message ID
+    latest_id = await db.get_latest_message_id(-1001234567)
+    assert latest_id == 5
+

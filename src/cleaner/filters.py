@@ -16,6 +16,7 @@ SUPPORTED_CONTENT_TYPES = {
     "animation": "🎞 GIF / Animation",
     "contact": "👤 Contact Card",
     "location": "📍 Location Pin",
+    "other": "⚙️ Service / System Event",
 }
 
 

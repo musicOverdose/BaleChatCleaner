@@ -247,6 +247,25 @@ class DatabaseManager:
                 rows = await cursor.fetchall()
                 return {row["content_type"]: row["cnt"] for row in rows}
 
+    async def get_latest_message_id(self, chat_id: int) -> Optional[int]:
+        """Finds the maximum positive integer message_id recorded for a chat."""
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute(
+                """
+                SELECT message_id FROM tracked_messages 
+                WHERE chat_id = ? AND CAST(message_id AS INTEGER) > 0 
+                ORDER BY CAST(message_id AS INTEGER) DESC LIMIT 1
+                """,
+                (chat_id,),
+            ) as cursor:
+                row = await cursor.fetchone()
+                if row and row[0]:
+                    try:
+                        return int(row[0])
+                    except (ValueError, TypeError):
+                        return None
+                return None
+
     # ==================== JOB OPERATIONS ====================
 
     async def create_job(self, job: CleaningJob) -> None:

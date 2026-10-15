@@ -5,6 +5,7 @@ Supports both direct channel/group message indexing and instant forward-to-regis
 
 import logging
 from aiogram import Router, F
+from aiogram.filters import Command
 from aiogram.types import Message, ChatMemberUpdated
 from src.database.db import DatabaseManager
 from src.cleaner.filters import get_message_content_type
@@ -98,3 +99,39 @@ async def track_bot_membership(event: ChatMemberUpdated, db: DatabaseManager):
         title = chat.title or f"Chat {chat.id}"
         await db.upsert_chat(chat_id=chat.id, title=title, chat_type=chat.type, username=chat.username)
         logger.info(f"Bot registered in chat {title} (@{chat.username}) with status '{new_status}'")
+
+
+@tracker_router.message(Command("check", "ping", "status"), F.chat.type.in_({"group", "supergroup"}))
+async def check_group_status(message: Message, db: DatabaseManager):
+    """
+    Replies in group to confirm bot presence, log current message ID, and remind admin of setup.
+    """
+    chat_id = message.chat.id
+    chat_title = message.chat.title or f"Chat {chat_id}"
+    chat_username = message.chat.username
+
+    await db.upsert_chat(chat_id=chat_id, title=chat_title, chat_type=message.chat.type, username=chat_username)
+    await db.save_message(
+        chat_id=chat_id,
+        message_id=str(message.message_id),
+        date=int(message.date.timestamp()) if message.date else 0,
+        content_type="text",
+        sender_id=message.from_user.id if message.from_user else None,
+    )
+    stats = await db.get_tracked_count(chat_id)
+    total = sum(stats.values())
+    stats_breakdown = ", ".join(f"{k}: {v}" for k, v in stats.items()) or "None"
+
+    await message.reply(
+        f"🤖 **BaleChatCleaner Status**\n\n"
+        f"• **Group:** {chat_title}\n"
+        f"• **Group ID:** `{chat_id}`\n"
+        f"• **Latest Message ID:** `{message.message_id}`\n"
+        f"• **Tracked Messages:** `{total}` ({stats_breakdown})\n\n"
+        "💡 *If normal member messages are not being counted:*\n"
+        "1. Open `@BotFather` in Bale messenger.\n"
+        "2. Send `/setprivacy` -> Select this bot -> Choose **`Disable`**.\n"
+        "3. Ensure this bot is an **Administrator** with **Delete Messages** permission.\n\n"
+        "🧹 *To configure cleaning, message the bot in private chat: `/panel` or `/clean`.*"
+    )
+

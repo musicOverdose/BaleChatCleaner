@@ -373,23 +373,47 @@ async def cb_launch_job(call: CallbackQuery, db: DatabaseManager, engine: AntiGl
         end_id=end_id,
     )
 
-    # If no tracked messages were found but custom range or count was requested, construct sequential ID stubs
+    # For numeric scope (e.g. Last 50/100) in 'all' mode, sweep backwards from latest known ID
+    if limit:
+        latest_id = await db.get_latest_message_id(chat_id)
+        if mode == "all" and latest_id and len(messages) < limit:
+            existing_ids = {str(m.message_id) for m in messages}
+            start_seq = max(1, latest_id - limit + 1)
+            for mid in range(start_seq, latest_id + 1):
+                if str(mid) not in existing_ids:
+                    messages.append(
+                        TrackedMessage(
+                            chat_id=chat_id,
+                            message_id=mid,
+                            date=0,
+                            content_type="all",
+                        )
+                    )
+            # Sort descending (newest first)
+            messages.sort(key=lambda m: int(m.message_id) if str(m.message_id).isdigit() else 0, reverse=True)
+            messages = messages[:limit]
+
+    # If no tracked messages were found
     if not messages:
-        if limit:
-            # Fallback: estimate from latest known message ID or ask admin
-            await call.answer("No tracked messages matched. Ensure bot has tracked messages in chat.", show_alert=True)
-            return
-        elif start_id and end_id:
-            # Construct sequential stubs for range
+        if start_id and end_id:
             messages = [
                 TrackedMessage(
                     chat_id=chat_id,
                     message_id=mid,
                     date=0,
-                    content_type="unknown",
+                    content_type="all" if mode == "all" else "unknown",
                 )
                 for mid in range(start_id, end_id + 1)
             ]
+        elif limit:
+            await call.answer(
+                "⚠️ No messages found. Send /check in your group first so the bot knows the current message ID, or use Custom ID Range.",
+                show_alert=True,
+            )
+            return
+        else:
+            await call.answer("No tracked messages matched the selected filter.", show_alert=True)
+            return
 
     job_id = str(uuid.uuid4())[:8]
     job = CleaningJob(

@@ -137,7 +137,15 @@ class AntiGlitchEngine:
                 while not deleted_successfully and attempts < 3:
                     attempts += 1
                     try:
-                        await self.bot.delete_message(chat_id=target_chat, message_id=item.message_id)
+                        try:
+                            await self.bot.delete_message(chat_id=target_chat, message_id=item.message_id)
+                        except TelegramBadRequest as sub_e:
+                            if target_chat != job.chat_id and ("chat not found" in str(sub_e).lower() or "not found" in str(sub_e).lower()):
+                                # Fallback to numeric chat_id
+                                await self.bot.delete_message(chat_id=job.chat_id, message_id=item.message_id)
+                            else:
+                                raise sub_e
+
                         job.deleted_count += 1
                         await self.db.mark_message_deleted(job.chat_id, item.message_id)
                         deleted_successfully = True
